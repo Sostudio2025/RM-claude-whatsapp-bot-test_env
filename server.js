@@ -294,7 +294,7 @@ async function getTableFields(baseId, tableId) {
 
         log('info', `📋 בודק שדות בטבלה: ${tableId}`);
 
-        const url = `https://api.airtable.com/v0/${baseId}/${tableId}?maxRecords=3`;
+        const url = `https://api.airtable.com/v0/${baseId}/${tableId}?maxRecords=5`;
         const response = await axios.get(url, {
             headers: {
                 'Authorization': `Bearer ${config.AIRTABLE_API_KEY}`
@@ -303,12 +303,43 @@ async function getTableFields(baseId, tableId) {
 
         if (response.data.records.length > 0) {
             const allFields = new Set();
+            const fieldExamples = {};
+            
             response.data.records.forEach(record => {
-                Object.keys(record.fields).forEach(field => allFields.add(field));
+                Object.keys(record.fields).forEach(field => {
+                    allFields.add(field);
+                    // שמור דוגמאות לכל שדה כדי לזהות ערכי בחירה
+                    if (!fieldExamples[field]) {
+                        fieldExamples[field] = [];
+                    }
+                    const value = record.fields[field];
+                    if (value !== null && value !== undefined) {
+                        if (Array.isArray(value)) {
+                            fieldExamples[field].push(...value);
+                        } else {
+                            fieldExamples[field].push(value);
+                        }
+                    }
+                });
             });
+
+            // נתח ערכי בחירה לכל שדה
+            const analyzedFields = {};
+            for (const field of allFields) {
+                const examples = fieldExamples[field] || [];
+                const uniqueValues = [...new Set(examples)];
+                
+                analyzedFields[field] = {
+                    hasValues: examples.length > 0,
+                    uniqueValues: uniqueValues,
+                    possibleSelectField: uniqueValues.length <= 10 && uniqueValues.length > 1,
+                    sampleValue: examples[0] || null
+                };
+            }
 
             const result = {
                 availableFields: Array.from(allFields),
+                fieldAnalysis: analyzedFields,
                 sampleRecord: response.data.records[0] ? response.data.records[0].fields : {}
             };
 
@@ -318,6 +349,7 @@ async function getTableFields(baseId, tableId) {
 
         return {
             availableFields: [],
+            fieldAnalysis: {},
             sampleRecord: {}
         };
     } catch (error) {
@@ -513,9 +545,11 @@ You are an intelligent assistant connected to Airtable via MCP tools. Your prima
    - If customer not found, ask if they want to create a new customer record
 
 2. **Check Customer Status**
-   - Examine current customer status using get_table_fields to verify available status values
-   - If status is not "לקוח בתהליך" (or equivalent), ask user for approval to update status
-   - Update customer status if approved
+   - **CRITICAL**: Use get_table_fields FIRST to get available status values from the Customers table
+   - Examine current customer status 
+   - Find the appropriate status value that means "customer in process" from the available options
+   - If status needs updating, ask user for approval to update to the correct available status value
+   - Update customer status if approved using ONLY values from the available options list
 
 3. **Locate Project**
    - Search Projects table for the specified project
@@ -531,10 +565,10 @@ You are an intelligent assistant connected to Airtable via MCP tools. Your prima
    - If no existing transaction found, proceed to create new transaction
 
 5. **Create New Transaction**
-   - Use get_table_fields to verify required fields and available options
+   - **CRITICAL**: Use get_table_fields to verify required fields and available options for Transactions table
    - Ask user for approval to create new transaction
    - Create transaction record with appropriate links to customer and project
-   - Set initial transaction status (verify available status options first)
+   - Set initial transaction status using ONLY available status options from the fields list
 
 6. **Final Steps**
    - Confirm transaction creation success
@@ -542,11 +576,14 @@ You are an intelligent assistant connected to Airtable via MCP tools. Your prima
    - Provide summary of all actions completed
 
 **Critical Notes for This Workflow:**
+- **NEVER use hardcoded status values** - always get available options from get_table_fields first
+- **VALIDATE all field values** before attempting updates or creation
 - **Never stop mid-sequence** - complete all necessary steps
 - **Handle missing data** by asking specific questions
 - **Request approval** before any create/update operations
 - **Validate all links** between customer, project, and transaction
 - **Provide clear progress updates** at each step
+- **If field value errors occur** - get available options and retry with correct values
 
 ## 📝 Notes Management
 
@@ -575,10 +612,12 @@ You are an intelligent assistant connected to Airtable via MCP tools. Your prima
 ## 🚨 Critical Rules
 
 ### Data Integrity
-- **Never assume field existence** - always verify using get_table_fields
-- **Never create new fields** - work only with existing table structure
+- **Never assume field existence OR field values** - always verify using get_table_fields
+- **Always get available select options** before using them in updates/creation
+- **Never create new fields OR new select options** - work only with existing table structure
 - **Validate record IDs** before update operations
 - **Handle duplicates** by asking user for clarification
+- **If you get INVALID_MULTIPLE_CHOICE_OPTIONS error** - immediately get available options and retry
 
 ### User Interaction
 - **Always respond in Hebrew** regardless of input language
@@ -785,6 +824,8 @@ app.post('/claude-query', async (req, res) => {
                             errorMessage = 'שגיאה: השדה שצוינו לא קיים בטבלה. אנא בדוק שמות שדות עם get_table_fields.';
                         } else if (errorMessage.includes('status code 422')) {
                             errorMessage = 'שגיאה: נתונים לא תקינים או שדה לא קיים. אנא בדוק עם get_table_fields.';
+                        } else if (errorMessage.includes('INVALID_MULTIPLE_CHOICE_OPTIONS')) {
+                            errorMessage = 'שגיאה: הערך שצוינו לא קיים ברשימת האפשרויות. חובה לבדוק הערכים הזמינים עם get_table_fields לפני עדכון.';
                         }
 
                         toolResults.push({
