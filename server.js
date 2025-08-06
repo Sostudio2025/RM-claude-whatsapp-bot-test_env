@@ -135,14 +135,22 @@ async function searchTransactions(baseId, customerId, projectId) {
 
         const records = response.data.records;
 
-        // חיפוש עסקות שמקושרות לאותו לקוח ופרויקט
+
         const matchingTransactions = records.filter(record => {
             const fields = record.fields;
-            const linkedCustomer = fields['מזהה לקוח ראשי (ID_Client)'];
-            const linkedProject = fields['מזהה פרויקט (ID_Project)'];
 
-            return (linkedCustomer && linkedCustomer.includes(customerId)) &&
-                (linkedProject && linkedProject.includes(projectId));
+            const linkedCustomer = fields['לקוחות'];
+            const linkedProject = fields['פרוייקט'];
+
+            const customerMatch = Array.isArray(linkedCustomer)
+                ? linkedCustomer.includes(customerId)
+                : linkedCustomer === customerId;
+
+            const projectMatch = Array.isArray(linkedProject)
+                ? linkedProject.includes(projectId)
+                : linkedProject === projectId;
+
+            return customerMatch && projectMatch;
         });
 
         log('success', `נמצאו ${matchingTransactions.length} עסקות תואמות`);
@@ -526,19 +534,35 @@ const systemPrompt = 'אתה עוזר חכם שמחובר לאיירטיבל.\n\
     '5. ביצוע הפעולה (create_record/update_record) רק עם IDs תקפים\n' +
     '6. דיווח על התוצאה למשתמש\n\n' +
     
-    '🎯 תרחיש מיוחד - לקוח השלים הרשמה / העביר דמי רצינות:\n' +
-    'כשאומרים לך "לקוח השלים הרשמה" או "העביר דמי רצינות":\n' +
-    '1. מצא את הלקוח בטבלת הלקוחות (search_airtable)\n' +
-    '2. ⚠️ וודא שנמצא לקוח עם ID תקף!\n' +
-    '3. מצא את הפרויקט בטבלת הפרויקטים (search_airtable)\n' +
-    '4. ⚠️ וודא שנמצא פרויקט עם ID תקף!\n' +
-    '5. בדוק אם יש עסקה קיימת (search_transactions)\n' +
-    '6. אם יש עסקה קיימת - הודע: "✅ כבר קיימת עסקה עבור [שם לקוח] ו[שם פרויקט]"\n' +
-    '7. אם אין עסקה - בדוק את השדות בטבלת עסקאות עם get_table_fields\n' +
-    '8. צור עסקה חדשה עם השדות המתאימים שמצאת\n' +
-    '9. בדוק שדות בטבלת לקוחות ועדכן סטטוס אם קיים שדה מתאים\n' +
-    '10. הודע: "✅ נוצרה עסקה חדשה! מספר: [ID]. סטטוס הלקוח עודכן."\n\n' +
     
+        
+    '🎯 תרחיש מיוחד - לקוח השלים הרשמה / העביר דמי רצינות:\n' +
+        'כשאומרים לך "לקוח השלים הרשמה" או "העביר דמי רצינות":\n' +
+        '1. מצא את הלקוח בטבלת הלקוחות (search_airtable)\n' +
+        '2. ⚠️ ודא שנמצא לקוח עם ID תקף!\n' +
+        '3. מצא את הפרויקט בטבלת הפרויקטים (search_airtable)\n' +
+        '4. ⚠️ ודא שנמצא פרויקט עם ID תקף!\n' +
+        '5. בדוק אם יש עסקה קיימת (search_transactions)\n' +
+        '6. ⚠️ חובה לבדוק אם עסקה קיימת לפני יצירה:\n' +
+        '   - תמיד השתמש בכלי search_transactions לפני כל ניסיון ליצור עסקה!\n' +
+        '   - אם התוצאה מכילה "found": 1 או יותר → אסור ליצור עסקה נוספת!\n' +
+        '   - במקרה כזה:\n' +
+        '     - אמור למשתמש: "✅ כבר קיימת עסקה עבור הלקוח והפרויקט"\n' +
+        '     - אל תשתמש בכלי create_record\n' +
+        '     - אל תבקש אישור לפעולה\n' +
+        '     - סיים את הפעולה במקום\n' +
+        '7. ⚠️ עסקה קיימת מוגדרת לפי שני שדות:\n' +
+        '   - מזהה לקוח ראשי (ID_Client)\n' +
+        '   - מזהה פרויקט (ID_Project)\n' +
+        '   אם שניהם תואמים לעסקה קיימת — העסקה כבר קיימת!\n' +
+        '   ⚠️ לעולם אל תיצור שתי עסקאות לאותו לקוח ולאותו פרויקט!\n' +
+        '8. אם אין עסקה קיימת:\n' +
+        '   - בדוק את השדות בטבלת עסקאות עם get_table_fields\n' +
+        '   - צור עסקה חדשה עם השדות המתאימים\n' +
+        '   - בדוק אם קיים שדה סטטוס בטבלת לקוחות ועדכן אותו\n' +
+        '   - הודע: "✅ נוצרה עסקה חדשה! מספר: [ID]. סטטוס הלקוח עודכן."\n\n' +
+
+     
     '🎯 תרחישים נוספים:\n' +
     '📞 יצירת לקוח חדש - תהליך חכם:\n' +
     'כשמבקשים ליצור לקוח חדש:\n' +
