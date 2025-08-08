@@ -168,70 +168,38 @@ async function searchTransactions(baseId, customerId, projectId) {
     }
 }
 
+
 async function findOfficeByFloorAndNumber(baseId, projectId, floorNumber, officeNumber) {
-    const formula = `AND(
-        FIND("${projectId}", ARRAYJOIN({פרוייקט})),
-        {קומה} = ${floorNumber},
-        {מס׳ משרד} = "${officeNumber}"
-    )`;
-    log('info', `🔍 מחפש משרד בפרויקט: ${projectId}, קומה: ${floorNumber}, מספר משרד: ${officeNumber}`);
-    const url = `https://api.airtable.com/v0/${baseId}/tbl7etO9Yn3VH9QpT?filterByFormula=${encodeURIComponent(formula)}&pageSize=10`;
+    log('info', `📥 Checking for offices in baseId ${baseId} project ${projectId} on floor ${floorNumber}`);
 
-    const response = await axios.get(url, {
-        headers: {
-            'Authorization': `Bearer ${config.AIRTABLE_API_KEY}`
-        }
+    // Step 1: Use your existing helper
+    const officesOnFloor = await listOfficesOnFloor(baseId, projectId, floorNumber);
+    log("info", `---=====Found ${officesOnFloor}`)
+    log('info', `🔍 Found ${officesOnFloor.length} offices on floor ${floorNumber}`);
+
+    // Step 2: Search manually for matching office number (handles string/number issues)
+    const matchingOffice = officesOnFloor.find(record => {
+        const num = record.fields['מס׳ משרד duplicate'] || record.fields['מס׳ משרד'];
+        return String(num).trim() === String(officeNumber).trim();
     });
- 
-    const records = response.data.records || [];
 
-    if (records.length > 0) {
-        log('success', `✅ נמצא משרד תואם: ${officeNumber}`);
-        return records[0];
+    if (matchingOffice) {
+        log('success', `✅ Matching office found: ${matchingOffice.id}`, matchingOffice.fields);
+        return matchingOffice;
+    } else {
+        log('warning', `❌ No office found with number ${officeNumber} on floor ${floorNumber}`, {
+            attemptedOffice: officeNumber,
+            attemptedFloor: floorNumber,
+        });
+        return null;
     }
-
-    log('warning', '❌ לא נמצא משרד תואם לקומה ומספר שנמסרו');
-    return null;
 }
 
 
 
-// async function findOfficeByFloorAndNumber(baseId, projectId, floorNumber, officeNumber) {
-//     const offices = await getAllRecords(baseId, 'tbl7etO9Yn3VH9QpT', 100);
-//     log('info', `🔍 מחפש משרד בפרויקט: ${projectId}, קומה: ${floorNumber}, מספר משרד: ${officeNumber}`);
-//     for (const record of offices) {
-//         const f = record.fields;
-//         log('info', `בודק משרד: ${record.id}`, { fields: f });
-//         const linkedProjectIds = f["פרוייקט"];
-//         const floor = f["קומה"];
-//         const officeNum = f["מס׳ משרד"];
-
-
-
-//         const projectMatch = Array.isArray(linkedProjectIds) && linkedProjectIds.includes(projectId);
-//         const floorMatch = floor != null && parseInt(floor) === parseInt(floorNumber);
-//         const officeMatch = officeNum != null && officeNum.toString().trim() === officeNumber.toString().trim();
-
-//         log('info', `🔍 בדיקת משרד: ${officeNum} | קומה: ${floor} | פרויקט: ${linkedProjectIds}`, {
-//             projectMatch, floorMatch, officeMatch
-//         });
-
-//         if (projectMatch && floorMatch && officeMatch) {
-//             log('success', `✅ נמצא משרד תואם: ${officeNum}`);
-//             return record;
-//         }
-//     }
-
-//     log('warning', '❌ לא נמצא משרד תואם לקומה ומספר שנמסרו');
-//     return null;
-// }
-
-
-
-
-
 async function listOfficesOnFloor(baseId, projectId, floorNumber) {
-    const formula = `AND(
+     log('info', `📥 Checking for list of offices in baseId ${baseId} project ${projectId} on floor ${floorNumber}`);
+     const formula = `AND(
         FIND("${projectId}", ARRAYJOIN({פרוייקט})),
         {קומה} = ${floorNumber}
     )`;
@@ -284,41 +252,58 @@ async function searchAirtable(baseId, tableId, searchTerm) {
     }
 }
 
-async function findOfficeByFormula(baseId, tableId, formula) {
-    const url = `https://api.airtable.com/v0/${baseId}/${tableId}?filterByFormula=${encodeURIComponent(formula)}&pageSize=1`;
-
-    const response = await axios.get(url, {
-        headers: {
-            'Authorization': `Bearer ${config.AIRTABLE_API_KEY}`
-        }
-    });
-
-    return response.data.records[0] || null;
-}
 
 
-async function getAllRecords(baseId, tableId, maxRecords = 100) {
+async function getAllRecords(baseId, tableId, maxRecords = null) {
     try {
         if (!validateTableId(tableId)) {
             throw new Error(`Invalid table ID: ${tableId}`);
         }
 
-        log('info', `📋 מביא רשומות מטבלה: ${tableId}`);
+        log('info', `📋 מביא את כל הרשומות מטבלה: ${tableId}${maxRecords ? ` (מקסימום ${maxRecords})` : ''}`);
 
-        const url = `https://api.airtable.com/v0/${baseId}/${tableId}?maxRecords=${maxRecords}`;
-        const response = await axios.get(url, {
-            headers: {
-                'Authorization': `Bearer ${config.AIRTABLE_API_KEY}`
+        let allRecords = [];
+        let offset = null;
+
+        do {
+            const remaining = maxRecords ? maxRecords - allRecords.length : null;
+            const pageSize = remaining ? Math.min(100, remaining) : 100;
+
+            const params = new URLSearchParams({ pageSize: pageSize.toString() });
+            if (offset) {
+                params.append('offset', offset);
             }
-        });
 
-        log('success', `נמצאו ${response.data.records.length} רשומות`);
-        return response.data.records;
+            const url = `https://api.airtable.com/v0/${baseId}/${tableId}?${params.toString()}`;
+            const response = await axios.get(url, {
+                headers: {
+                    'Authorization': `Bearer ${config.AIRTABLE_API_KEY}`
+                }
+            });
+
+            const fetched = response.data.records || [];
+            allRecords.push(...fetched);
+            offset = response.data.offset;
+
+            log('info', `🔄 נמשכו ${fetched.length} רשומות (סה"כ עד כה: ${allRecords.length})`);
+
+            // Stop early if we reached maxRecords
+            if (maxRecords && allRecords.length >= maxRecords) {
+                log('info', `⛔️ עצירה מוקדמת לאחר השגת ${allRecords.length} רשומות (מקסימום שנקבע)`);
+                break;
+            }
+
+        } while (offset);
+
+        log('success', `🎉 סה"כ נמשכו ${allRecords.length} רשומות מהטבלה ${tableId}`);
+        return allRecords;
+
     } catch (error) {
-        log('error', 'שגיאה בקבלת רשומות', { error: error.message });
-        throw new Error(`Get records failed: ${error.message}`);
+        log('error', '❌ שגיאה בקבלת כל הרשומות', { error: error.message });
+        throw new Error(`Get all records failed: ${error.message}`);
     }
 }
+
 
 async function createRecord(baseId, tableId, fields) {
     try {
