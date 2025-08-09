@@ -168,6 +168,54 @@ async function searchTransactions(baseId, customerId, projectId) {
     }
 }
 
+
+async function findOfficeByFloorAndNumber(baseId, projectId, floorNumber, officeNumber) {
+    log('info', `📥 Checking for offices in baseId ${baseId} project ${projectId} on floor ${floorNumber}`);
+
+    // Step 1: Use your existing helper
+    const officesOnFloor = await listOfficesOnFloor(baseId, projectId, floorNumber);
+    log("info", `---=====Found ${officesOnFloor}`)
+    log('info', `🔍 Found ${officesOnFloor.length} offices on floor ${floorNumber}`);
+
+    // Step 2: Search manually for matching office number (handles string/number issues)
+    const matchingOffice = officesOnFloor.find(record => {
+        const num = record.fields['מס׳ משרד duplicate'] || record.fields['מס׳ משרד'];
+        return String(num).trim() === String(officeNumber).trim();
+    });
+
+    if (matchingOffice) {
+        log('success', `✅ Matching office found: ${matchingOffice.id}`, matchingOffice.fields);
+        return matchingOffice;
+    } else {
+        log('warning', `❌ No office found with number ${officeNumber} on floor ${floorNumber}`, {
+            attemptedOffice: officeNumber,
+            attemptedFloor: floorNumber,
+        });
+        return null;
+    }
+}
+
+
+
+async function listOfficesOnFloor(baseId, projectId, floorNumber) {
+     log('info', `📥 Checking for list of offices in baseId ${baseId} project ${projectId} on floor ${floorNumber}`);
+     const formula = `AND(
+        FIND("${projectId}", ARRAYJOIN({פרוייקט})),
+        {קומה} = ${floorNumber}
+    )`;
+
+    const url = `https://api.airtable.com/v0/${baseId}/tbl7etO9Yn3VH9QpT?filterByFormula=${encodeURIComponent(formula)}`;
+
+    const response = await axios.get(url, {
+        headers: {
+            'Authorization': `Bearer ${config.AIRTABLE_API_KEY}`
+        }
+    });
+
+    return response.data.records || [];
+}
+
+
 async function searchAirtable(baseId, tableId, searchTerm) {
     try {
         if (!validateTableId(tableId)) {
@@ -204,28 +252,58 @@ async function searchAirtable(baseId, tableId, searchTerm) {
     }
 }
 
-async function getAllRecords(baseId, tableId, maxRecords = 100) {
+
+
+async function getAllRecords(baseId, tableId, maxRecords = null) {
     try {
         if (!validateTableId(tableId)) {
             throw new Error(`Invalid table ID: ${tableId}`);
         }
 
-        log('info', `📋 מביא רשומות מטבלה: ${tableId}`);
+        log('info', `📋 מביא את כל הרשומות מטבלה: ${tableId}${maxRecords ? ` (מקסימום ${maxRecords})` : ''}`);
 
-        const url = `https://api.airtable.com/v0/${baseId}/${tableId}?maxRecords=${maxRecords}`;
-        const response = await axios.get(url, {
-            headers: {
-                'Authorization': `Bearer ${config.AIRTABLE_API_KEY}`
+        let allRecords = [];
+        let offset = null;
+
+        do {
+            const remaining = maxRecords ? maxRecords - allRecords.length : null;
+            const pageSize = remaining ? Math.min(100, remaining) : 100;
+
+            const params = new URLSearchParams({ pageSize: pageSize.toString() });
+            if (offset) {
+                params.append('offset', offset);
             }
-        });
 
-        log('success', `נמצאו ${response.data.records.length} רשומות`);
-        return response.data.records;
+            const url = `https://api.airtable.com/v0/${baseId}/${tableId}?${params.toString()}`;
+            const response = await axios.get(url, {
+                headers: {
+                    'Authorization': `Bearer ${config.AIRTABLE_API_KEY}`
+                }
+            });
+
+            const fetched = response.data.records || [];
+            allRecords.push(...fetched);
+            offset = response.data.offset;
+
+            log('info', `🔄 נמשכו ${fetched.length} רשומות (סה"כ עד כה: ${allRecords.length})`);
+
+            // Stop early if we reached maxRecords
+            if (maxRecords && allRecords.length >= maxRecords) {
+                log('info', `⛔️ עצירה מוקדמת לאחר השגת ${allRecords.length} רשומות (מקסימום שנקבע)`);
+                break;
+            }
+
+        } while (offset);
+
+        log('success', `🎉 סה"כ נמשכו ${allRecords.length} רשומות מהטבלה ${tableId}`);
+        return allRecords;
+
     } catch (error) {
-        log('error', 'שגיאה בקבלת רשומות', { error: error.message });
-        throw new Error(`Get records failed: ${error.message}`);
+        log('error', '❌ שגיאה בקבלת כל הרשומות', { error: error.message });
+        throw new Error(`Get all records failed: ${error.message}`);
     }
 }
+
 
 async function createRecord(baseId, tableId, fields) {
     try {
@@ -444,7 +522,22 @@ const airtableTools = [
             },
             required: ["baseId", "tableId"]
         }
+    },
+    {
+    name: "find_office_by_floor_and_number",
+    description: "Find an office record based on floor number and office number within the same project",
+    input_schema: {
+        type: "object",
+        properties: {
+            baseId: { type: "string" },
+            projectId: { type: "string" },
+            floorNumber: { type: "number" },
+            officeNumber: { type: "number" }
+        },
+        required: ["baseId", "projectId", "floorNumber", "officeNumber"]
     }
+}
+
 ];
 
 async function handleToolUse(toolUse) {
@@ -470,6 +563,16 @@ async function handleToolUse(toolUse) {
                 toolUse.input.maxRecords
             );
         case 'create_record':
+            if (toolUse.input.tableId === 'tblSgYN8CbQcxeT0j') {
+                const fields = toolUse.input.fields || {};
+                if (!fields['משרד'] || !Array.isArray(fields['משרד']) || fields['משרד'].length === 0) {
+                    return {
+                        type: "tool_result",
+                        tool_use_id: toolUse.id,
+                        content: '❌ לא ניתן ליצור עסקה ללא משרד תואם. אנא ציין את מספר הקומה ומספר המשרד.'
+                    };
+                }
+            }
             return await createRecord(
                 toolUse.input.baseId,
                 toolUse.input.tableId,
@@ -487,6 +590,37 @@ async function handleToolUse(toolUse) {
                 toolUse.input.baseId,
                 toolUse.input.tableId
             );
+        case 'find_office_by_floor_and_number': {
+            const office = await findOfficeByFloorAndNumber(
+                toolUse.input.baseId,
+                toolUse.input.projectId,
+                toolUse.input.floorNumber,
+                toolUse.input.officeNumber
+            );
+
+            if (!office) {
+                const list = await listOfficesOnFloor(
+                    toolUse.input.baseId,
+                    toolUse.input.projectId,
+                    toolUse.input.floorNumber
+                );
+
+                const fallbackMessage = list.length
+                    ? `❗ לא נמצא משרד תואם.\nהנה רשימת משרדים בקומה ${toolUse.input.floorNumber}:\n` +
+                    list.map(r => `- מספר: ${r.fields['מספר משרד']} (ID: ${r.id})`).join('\n') +
+                    `\nאנא בחר אחד מהם.`
+                    : `❗ לא נמצאו משרדים כלל בקומה ${toolUse.input.floorNumber} בפרויקט זה.`;
+
+                return {
+                    type: "tool_result",
+                    tool_use_id: toolUse.id,
+                    content: fallbackMessage
+                };
+            }
+
+            return office;
+        }
+
         default:
             throw new Error(`Unknown tool: ${toolUse.name}`);
     }
@@ -534,7 +668,6 @@ const systemPrompt = 'אתה עוזר חכם שמחובר לאיירטיבל.\n\
     '5. ביצוע הפעולה (create_record/update_record) רק עם IDs תקפים\n' +
     '6. דיווח על התוצאה למשתמש\n\n' +
     
-    
         
     '🎯 תרחיש מיוחד - לקוח השלים הרשמה / העביר דמי רצינות:\n' +
         'כשאומרים לך "לקוח השלים הרשמה" או "העביר דמי רצינות":\n' +
@@ -543,6 +676,12 @@ const systemPrompt = 'אתה עוזר חכם שמחובר לאיירטיבל.\n\
         '3. מצא את הפרויקט בטבלת הפרויקטים (search_airtable)\n' +
         '4. ⚠️ ודא שנמצא פרויקט עם ID תקף!\n' +
         '5. בדוק אם יש עסקה קיימת (search_transactions)\n' +
+            '🏢 איתור משרד לפי קומה ומספר:\n' +
+            '- אם נמסרו מספר קומה ומספר משרד - השתמש בכלי find_office_by_floor_and_number\n' +
+            '- הפורמט: { projectId, floor, officeNumber }\n' +
+            '- אם נמצא משרד → קבל מזהה משרד (ID_Office) וקשר אותו לשדה המתאים בעסקה\n' +
+            '- אם לא נמצא משרד → דווח למשתמש: "❌ לא נמצא משרד תואם לקומה ומספר שנמסרו"\n' +
+            '- אסור להמציא מזהה משרד אם לא נמצא תואם אמיתי!\n' + 
         '6. ⚠️ חובה לבדוק אם עסקה קיימת לפני יצירה:\n' +
         '   - תמיד השתמש בכלי search_transactions לפני כל ניסיון ליצור עסקה!\n' +
         '   - אם התוצאה מכילה "found": 1 או יותר → אסור ליצור עסקה נוספת!\n' +
@@ -557,10 +696,25 @@ const systemPrompt = 'אתה עוזר חכם שמחובר לאיירטיבל.\n\
         '   אם שניהם תואמים לעסקה קיימת — העסקה כבר קיימת!\n' +
         '   ⚠️ לעולם אל תיצור שתי עסקאות לאותו לקוח ולאותו פרויקט!\n' +
         '8. אם אין עסקה קיימת:\n' +
+        '   - ⚠️ חובה לוודא שמשרד תואם נמצא לפני יצירת עסקה!\n' +
+        '   - אם לא התקבלו קומה + מספר משרד מהמשתמש:\n' +
+        '     - השב: "❗ לא סופקו פרטי משרד. אנא ציין את מספר הקומה ומספר המשרד."\n' +
+        '     - סיים את הפעולה.\n' +
+        '   - אם התקבלו קומה ומספר משרד:\n' +
+        '     - השתמש בכלי find_office_by_floor_and_number עם מזהה פרויקט, קומה ומספר משרד\n' +
+        '     - אם נמצא משרד → קבל מזהה משרד (ID_Office) וקשר אותו לשדה המתאים בעסקה\n' +
+        '     - אם לא נמצא משרד → דווח למשתמש: "❌ לא נמצא משרד תואם לקומה ומספר שנמסרו", וסיים את הפעולה\n' +
         '   - בדוק את השדות בטבלת עסקאות עם get_table_fields\n' +
-        '   - צור עסקה חדשה עם השדות המתאימים\n' +
+        '   - צור עסקה חדשה עם השדות המתאימים כולל מזהה משרד\n' +
         '   - בדוק אם קיים שדה סטטוס בטבלת לקוחות ועדכן אותו\n' +
         '   - הודע: "✅ נוצרה עסקה חדשה! מספר: [ID]. סטטוס הלקוח עודכן."\n\n' +
+        
+        ' אם לא נמצא משרד תואם:' +
+        '- עצור את הפעולה!' +
+        '- שאל את המשתמש מהי הקומה'      +
+        ' - הצג את כל המשרדים הקיימים בקומה לבחירה'  +    
+        ' - אל תיצור עסקה עד שמשרד תואם נבחר!' +
+
 
      
     '🎯 תרחישים נוספים:\n' +
@@ -590,6 +744,8 @@ const systemPrompt = 'אתה עוזר חכם שמחובר לאיירטיבל.\n\
     '- create_record: יצירת רשומה חדשה\n' +
     '- update_record: עדכון רשומה קיימת\n' +
     '- get_table_fields: קבלת שדות - השתמש בזה תמיד לפני יצירה/עדכון!\n\n' +
+    '- find_office_by_floor_and_number: איתור משרד לפי קומה ומספר בפרויקט\n'
+
     
     '💡 דוגמאות לפורמטים נכונים:\n' +
     '- שדה מקושר: {"שם_השדה": ["recXXXXXXXXXXXXX"]}\n' +
